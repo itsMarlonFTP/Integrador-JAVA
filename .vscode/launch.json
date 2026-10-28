@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "RetailOrder Service (local/H2)",
+      "request": "launch",
+      "mainClass": "com.axity.curso.retailservice.RetailserviceApplication",
+      "projectName": "retailservice"
+    },
+    {
+      "type": "java",
+      "name": "RetailOrder Service (PostgreSQL)",
+      "request": "launch",
+      "mainClass": "com.axity.curso.retailservice.RetailserviceApplication",
+      "projectName": "retailservice",
+      "vmArgs": "-Dspring.profiles.active=postgres"
+    }
+  ]
+}
