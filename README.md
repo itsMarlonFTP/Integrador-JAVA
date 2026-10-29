@@ -1,22 +1,73 @@
 # RetailOrder Service
 
-Microservicio REST para administrar catálogo, existencias y pedidos retail. Requiere JDK 21. Está implementado con Java 21, Spring Boot 3.5.7, Spring MVC, Spring Data JPA, Bean Validation, Flyway y OpenAPI.
+RetailOrder Service es un microservicio REST para administrar catálogo de
+productos, inventario y pedidos de una tienda. Está desarrollado con Java 21 y
+Spring Boot 3.5.7, usando Spring MVC, Spring Data JPA, Bean Validation, Flyway y
+OpenAPI/Swagger.
 
-## Cambios de modelo y base de datos
+La aplicación expone endpoints HTTP para consultar y actualizar productos,
+controlar existencias, crear y cancelar pedidos, y consultar los resultados de
+procesos asincrónicos relacionados.
 
-Las entidades JPA principales se mapean a las tablas `"Product"`, `"Order"` y `"OrderItem"` (con mayúsculas y nombres exactos en H2). La migración `V2__rename_domain_tables.sql` renombra las tablas que V1 creó como `products`, `purchase_orders` y `order_items`; los registros existentes y las relaciones se conservan. Las tablas auxiliares `warehouse_movements` y `async_event_logs` permanecen porque soportan auditoría y tareas asincrónicas.
+## Funcionalidades principales
 
-Los contratos HTTP mantienen sus rutas y nombres de campos JSON para no romper clientes. Los DTOs se redujeron de varios archivos independientes a cuatro grupos: `ProductDtos`, `OrderDtos`, `InventoryDtos` y `ApiDtos`. Swagger UI organiza las operaciones bajo tres etiquetas: `Product`, `Order` y `OrderItem`; las operaciones que crean o muestran el detalle del pedido aparecen tanto en Order como en OrderItem. Los contratos documentados incluyen esquemas como `OrderCreateRequest`, `OrderItemRequest`, `OrderResponse` y `ProductResponse`; no se publican las entidades JPA directamente. Swagger UI conserva su dirección `/swagger-ui.html`.
-
-Al cambiar el esquema, reinicia la aplicación para que Flyway ejecute V2. En H2 Console, busca los nombres entre comillas `"Product"`, `"Order"` y `"OrderItem"`; `warehouse_movements` y `async_event_logs` siguen apareciendo por diseño.
+- Catálogo de productos con SKU único, precio, categoría, stock y mínimo de
+  reabastecimiento.
+- Búsqueda paginada de productos activos por categoría y rango de precios.
+- Desactivación lógica de productos para conservar su historial.
+- Consulta, reabastecimiento y ajuste de inventario, con registro de movimientos.
+- Creación transaccional de pedidos con uno o más productos.
+- Validación de stock y cálculo de precios y totales en el servidor.
+- Cambio de estado de pedidos y cancelación idempotente con devolución de stock.
+- Procesamiento asincrónico de notificaciones simuladas, alertas y auditoría.
+- Documentación interactiva de la API con Swagger UI.
 
 ## Arquitectura
 
-Los controladores REST (`controller`) validan y traducen solicitudes a DTOs. Los servicios (`service`) implementan reglas de negocio y límites transaccionales. Los repositorios (`repository`) acceden a entidades JPA (`model`). `GlobalExceptionHandler` traduce errores de dominio y validación al formato HTTP común. Las respuestas y solicitudes no exponen entidades JPA.
+El proyecto separa responsabilidades por paquetes:
 
-Las compras y cancelaciones usan transacciones y bloqueos pesimistas por producto, ordenando los IDs antes de adquirir los bloqueos. Así se serializan compras concurrentes sobre el mismo inventario y se evita el stock negativo. Las cancelaciones también bloquean el pedido; una cancelación ya aplicada responde el estado existente sin una segunda devolución.
+| Paquete | Responsabilidad |
+|---|---|
+| `controller` | Endpoints HTTP, validación de solicitudes y códigos de respuesta |
+| `dto` | Modelos de entrada y salida de la API; las entidades no se exponen |
+| `service` | Reglas de negocio, transacciones y publicación de eventos |
+| `repository` | Acceso a datos con Spring Data JPA |
+| `model` | Entidades persistentes y estados del dominio |
+| `exception` | Errores de dominio y respuesta HTTP uniforme |
+| `config` | Configuración de OpenAPI y ejecución asincrónica |
 
-### Diagrama de clases (Mermaid)
+El flujo típico es **HTTP → Controller → DTO/validación → Service → Repository/JPA
+→ base de datos → respuesta HTTP**. `GlobalExceptionHandler` convierte errores
+de validación y de negocio a una estructura común:
+
+```json
+{
+  "timestamp": "fecha y hora",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Descripción del error",
+  "path": "/api/v1/products"
+}
+```
+
+Las operaciones de compra y cancelación son transaccionales y bloquean los
+productos involucrados para evitar ventas concurrentes por encima del stock.
+Los productos se bloquean en orden de ID para reducir el riesgo de interbloqueos.
+Cancelar un pedido ya cancelado no devuelve stock por segunda vez.
+
+### Entidades y relaciones
+
+- `Product`: catálogo, precio y existencias.
+- `Order`: cliente, fecha, estado y total.
+- `OrderItem`: productos y cantidades que forman un pedido; conserva el precio
+  aplicado al momento de la compra.
+- `WarehouseMovement`: historial de entradas y salidas de inventario.
+- `AsyncEventLog`: resultado observable de las tareas asincrónicas.
+
+Un pedido contiene uno o más detalles, cada detalle se refiere a un producto y
+un producto puede tener muchos movimientos de almacén.
+
+### Diagrama de clases
 
 ```mermaid
 classDiagram
@@ -54,64 +105,31 @@ classDiagram
   Product "1" --> "*" WarehouseMovement : history
 ```
 
-Las clases `Product`, `Order` y `OrderItem` corresponden a las entidades JPA. Las solicitudes y respuestas descritas en Swagger son DTOs del paquete `dto`.
-
-### DER (Mermaid)
-
-```mermaid
-erDiagram
-  Product ||--o{ OrderItem : referenced_by
-  Order ||--|{ OrderItem : contains
-  Product ||--o{ WAREHOUSE_MOVEMENTS : records
-  Product {
-    bigint id PK
-    varchar sku UK
-    varchar name
-    decimal price
-    int stock
-    int minimum_stock
-    boolean active
-  }
-  Order {
-    bigint id PK
-    varchar customer_id
-    varchar status
-    decimal total
-    timestamp created_at
-  }
-  OrderItem {
-    bigint id PK
-    bigint order_id FK
-    bigint product_id FK
-    int quantity
-    decimal unit_price
-    decimal subtotal
-  }
-  WAREHOUSE_MOVEMENTS {
-    bigint id PK
-    bigint product_id FK
-    varchar type
-    int quantity_delta
-    int stock_after
-    bigint order_id
-  }
-  ASYNC_EVENT_LOGS {
-    bigint id PK
-    varchar event_type
-    varchar details
-    boolean successful
-    timestamp occurred_at
-  }
-```
-
 ## Base de datos
 
-- **Local rápido:** H2 en memoria con el perfil `local` (perfil predeterminado). Flyway crea el esquema y `data-local.sql` carga productos, pedidos, detalles, movimientos y resultados asincrónicos de demostración. Al reiniciar la aplicación, los datos vuelven a su estado inicial.
-- El conjunto local incluye 6 productos, 3 pedidos, 4 detalles, 5 movimientos y 9 resultados asincrónicos demostrativos. Los IDs se generan automáticamente; las FK se enlazan mediante SKU y cliente.
-- **PostgreSQL:** iniciar `docker compose up -d postgres` y ejecutar la app con el perfil `postgres`. Compose incluye únicamente credenciales locales de demostración; reemplácelas en cualquier entorno compartido. También se aceptan `DB_URL`, `DB_USERNAME` y `DB_PASSWORD` como variables de entorno.
-- El esquema se crea y versiona en `src/main/resources/db/migration`. Hibernate valida el esquema de Flyway; no genera ni actualiza tablas automáticamente.
+Flyway administra el esquema con migraciones ubicadas en
+`src/main/resources/db/migration`. Hibernate valida el esquema al arrancar; no
+crea ni modifica tablas automáticamente.
 
-Para una explicación detallada de las tablas `warehouse_movements`, `async_event_logs` y `flyway_schema_history`, así como los flujos de negocio y asincronía, consulta [docs/PROJECT-WALKTHROUGH.md](docs/PROJECT-WALKTHROUGH.md).
+Las tablas de dominio son `"Product"`, `"Order"` y `"OrderItem"`. Las tablas
+auxiliares `warehouse_movements` y `async_event_logs` registran auditoría y
+resultados asincrónicos. Flyway guarda las migraciones aplicadas en
+`flyway_schema_history`.
+
+- **H2 local:** perfil predeterminado `local`, base en memoria
+  `jdbc:h2:mem:retaildb`. Flyway crea el esquema y `data-local.sql` carga los
+  datos de demostración en cada inicio. La base vuelve a su estado inicial al
+  reiniciar el proceso.
+- **PostgreSQL:** perfil `postgres`. Puede iniciarse con Docker Compose para
+  desarrollo local o utilizarse desde Kubernetes. Las propiedades pueden
+  configurarse mediante `DB_URL`, `DB_USERNAME` y `DB_PASSWORD`.
+
+Los datos locales de H2 contienen seis productos, tres pedidos, cuatro
+detalles, cinco movimientos y nueve registros asincrónicos. El sexto producto
+está inactivo, por lo que la búsqueda normal de productos devuelve cinco.
+
+Para más detalle sobre tablas, relaciones y flujo de datos consulta
+[docs/PROJECT-WALKTHROUGH.md](docs/PROJECT-WALKTHROUGH.md).
 
 ## Ejecutar desde Visual Studio Code
 
@@ -120,7 +138,9 @@ Para una explicación detallada de las tablas `warehouse_movements`, `async_even
 3. Esperar a que Java/Maven importen el proyecto. El archivo `.vscode/launch.json` contiene las opciones **RetailOrder Service (local/H2)** y **RetailOrder Service (PostgreSQL)**. Seleccionar una y pulsar F5. Para PostgreSQL, iniciar antes Compose.
 4. Abrir Swagger UI en <http://localhost:8080/swagger-ui.html>. El documento OpenAPI está en <http://localhost:8080/v3/api-docs>.
 
-La aplicación local arranca con H2. La consola H2 se encuentra en <http://localhost:8080/h2-console>; JDBC URL `jdbc:h2:mem:retaildb`, usuario `sa` y contraseña vacía.
+La aplicación local arranca con H2. La consola H2 se encuentra en
+<http://localhost:8080/h2-console>; JDBC URL `jdbc:h2:mem:retaildb`, usuario
+`sa` y contraseña vacía.
 
 ## API v1
 
@@ -150,7 +170,10 @@ Los errores usan `{ "timestamp", "status", "error", "message", "path" }`. Valida
 
 Los eventos se publican solo después de confirmar la transacción y se ejecutan en el `retailTaskExecutor` acotado. Las interfaces `PurchaseNotificationPort`, `WarehouseAuditPort` y `ReplenishmentAlertPort` separan los efectos secundarios. En esta entrega, la confirmación y alerta son **simuladas**: se registran como resultado, no se envía correo, SMS ni mensaje externo. La auditoría sí persiste movimientos en `warehouse_movements`. `async_event_logs` expone resultados y fallos; los errores también se escriben en el log de aplicación y no revierten la compra confirmada.
 
-La ejecución en memoria no es una cola durable: si el proceso se detiene inmediatamente tras el commit, una tarea pendiente podría perderse. En producción, sustituir el despachador por un outbox durable/mensajería es el siguiente paso.
+La ejecución en memoria no es una cola durable: si el proceso se detiene
+inmediatamente tras el commit, una tarea pendiente podría perderse. En
+producción, sustituir el despachador por un outbox durable o un sistema de
+mensajería es un posible siguiente paso.
 
 ## Compilar y probar
 
@@ -161,4 +184,62 @@ Con JDK 21 instalado:
 .\mvnw.cmd spring-boot:run
 ```
 
-El proyecto incluye pruebas REST e integración en `src/test/java`, con H2 aislado en perfil `test`. Desde VS Code también pueden ejecutarse en la vista Testing o con **Java: Run Tests**. El wrapper se fija a Maven 3.9.9 y descarga la distribución oficial si hace falta. La guía reproducible de pruebas interactivas Swagger, con solicitudes y resultados esperados, está en [docs/MANUAL-TESTING.md](docs/MANUAL-TESTING.md). Swagger permite pruebas manuales; **no sustituye** las pruebas automatizadas JUnit/MockMvc.
+El proyecto incluye pruebas REST e integración en `src/test/java`, con H2
+aislado en perfil `test`. Desde VS Code también pueden ejecutarse en la vista
+Testing o con **Java: Run Tests**. El wrapper se fija a Maven 3.9.9 y descarga
+la distribución oficial si hace falta. La guía reproducible de pruebas
+interactivas Swagger, con solicitudes y resultados esperados, está en
+[docs/MANUAL-TESTING.md](docs/MANUAL-TESTING.md). Swagger permite pruebas
+manuales; **no sustituye** las pruebas automatizadas JUnit/MockMvc.
+
+## Docker y Kubernetes
+
+Docker empaqueta la aplicación y Java 21 en una imagen ejecutable. Kubernetes
+ejecuta esa imagen, supervisa los pods y proporciona un Service estable para
+recibir solicitudes. En el despliegue de este proyecto hay tres réplicas de la
+API compartiendo PostgreSQL.
+
+PostgreSQL corre en un pod con una réplica y un PersistentVolumeClaim (PVC)
+montado en su directorio de datos. El PVC conserva la base cuando se reemplaza
+el pod, pero **no es un respaldo**. La base no se publica directamente al
+navegador: el Service de la API expone HTTP y la aplicación consulta PostgreSQL
+internamente.
+
+Los archivos de despliegue son:
+
+- `Dockerfile` y `.dockerignore`: construcción de la imagen de la aplicación.
+- `k8s/postgres.yaml`: PostgreSQL, Service interno y PVC.
+- `k8s/api-configmap.yaml`: perfil y conexión no confidencial de la API.
+- `k8s/api-deployment.yaml`: tres réplicas de la API.
+- `k8s/api-service.yaml`: acceso HTTP al servicio.
+- `k8s/postgres-seed.sql`: datos de demostración para PostgreSQL; se ejecuta
+  manualmente una sola vez en una base preparada.
+
+La contraseña se proporciona mediante el Secret `retail-db-secret`, que se
+crea en el clúster y no se almacena en los manifiestos del repositorio. Para
+acceso local se puede usar `kubectl port-forward`; Swagger UI se sirve en
+`http://localhost:8080/swagger-ui.html`.
+
+Con Docker Desktop y Kubernetes habilitados, desde CMD en la raíz del proyecto:
+
+```cmd
+docker build -t retail-order-service:1.0.1 .
+kubectl create secret generic retail-db-secret --from-literal=DB_PASSWORD=retail_dev --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s\postgres.yaml
+kubectl rollout status deployment/postgres --timeout=180s
+kubectl apply -f k8s\api-configmap.yaml
+kubectl apply -f k8s\api-deployment.yaml
+kubectl apply -f k8s\api-service.yaml
+kubectl rollout status deployment/retail-api --timeout=600s
+kubectl port-forward service/retail-api 8080:80
+```
+
+Deja abierto el último comando y visita
+<http://localhost:8080/swagger-ui.html>. Para cargar datos de demostración en
+una base recién creada, ejecuta una sola vez el seed manual descrito en
+[docs/KUBERNETES-FILES.md](docs/KUBERNETES-FILES.md); no lo repitas sobre una
+base ya sembrada.
+
+La guía con explicación de cada archivo, comandos de despliegue y verificación
+desde consola y Docker Desktop está en
+[docs/KUBERNETES-FILES.md](docs/KUBERNETES-FILES.md).
