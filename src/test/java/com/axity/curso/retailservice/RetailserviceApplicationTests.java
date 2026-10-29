@@ -52,6 +52,15 @@ class RetailserviceApplicationTests {
         long firstProduct = createProduct("SKU-TEST-A", "Producto A", "Alimentos", "12.50", 5, 1);
         long secondProduct = createProduct("SKU-TEST-B", "Producto B", "Hogar", "3.00", 4, 3);
 
+        mockMvc.perform(get("/api/v1/products"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[*].sku", hasItem("SKU-TEST-A")));
+
+        mockMvc.perform(get("/api/v1/products").param("category", "Alimentos"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(1)))
+                .andExpect(jsonPath("$.content[0].sku").value("SKU-TEST-A"));
+
         mockMvc.perform(get("/api/v1/products")
                         .param("category", "Alimentos")
                         .param("minimumPrice", "10.00")

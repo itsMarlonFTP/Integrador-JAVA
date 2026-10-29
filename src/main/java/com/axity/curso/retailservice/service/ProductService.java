@@ -1,12 +1,17 @@
 package com.axity.curso.retailservice.service;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import jakarta.persistence.criteria.Predicate;
 import com.axity.curso.retailservice.dto.ProductDtos.CreateRequest;
 import com.axity.curso.retailservice.dto.ProductDtos.Response;
 import com.axity.curso.retailservice.dto.ProductDtos.UpdateRequest;
@@ -62,7 +67,23 @@ public class ProductService {
             throw new IllegalArgumentException("El precio mínimo no puede superar el precio máximo");
         }
         String normalizedCategory = category == null || category.isBlank() ? null : category.trim();
-        return products.searchActive(normalizedCategory, minimumPrice, maximumPrice, pageable)
+        Specification<Product> filters = (root, query, criteriaBuilder) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            predicates.add(criteriaBuilder.isTrue(root.get("active")));
+            if (normalizedCategory != null) {
+                predicates.add(criteriaBuilder.equal(
+                        criteriaBuilder.lower(root.get("category")),
+                        normalizedCategory.toLowerCase(Locale.ROOT)));
+            }
+            if (minimumPrice != null) {
+                predicates.add(criteriaBuilder.greaterThanOrEqualTo(root.get("price"), minimumPrice));
+            }
+            if (maximumPrice != null) {
+                predicates.add(criteriaBuilder.lessThanOrEqualTo(root.get("price"), maximumPrice));
+            }
+            return criteriaBuilder.and(predicates.toArray(Predicate[]::new));
+        };
+        return products.findAll(filters, pageable)
                 .map(ProductService::toResponse);
     }
 
