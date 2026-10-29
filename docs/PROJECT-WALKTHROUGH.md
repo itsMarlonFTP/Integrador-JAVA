@@ -284,11 +284,14 @@ La respuesta del DELETE contiene la representación del pedido cancelado (`200 O
 
 Los servicios publican objetos `RetailAsyncEvent` dentro de la transacción principal. `RetailAsyncEventListener` está configurado con `@TransactionalEventListener(phase = AFTER_COMMIT)` y `@Async("retailTaskExecutor")`:
 
+- En la consola de la aplicación se registra el inicio y la finalización de cada tarea, con una descripción concreta: pedido notificado, movimiento y variación de inventario, o producto y umbral de una alerta. Los mensajes aparecen en el hilo `retail-async-*` y las alertas/notificaciones locales también muestran su mensaje simulado.
 - **`ORDER_CONFIRMED`** llama a `PurchaseNotificationPort`. La implementación local escribe un mensaje de confirmación simulada en el log y registra el resultado en `async_event_logs`.
 - **`WAREHOUSE_AUDIT`** llama a `WarehouseAuditPort`. La implementación local guarda `WarehouseMovement` en `warehouse_movements` y registra `AUDITORIA_INVENTARIO` en `async_event_logs`.
 - **`LOW_STOCK`** llama a `ReplenishmentAlertPort`. La implementación local escribe una alerta simulada en el log y registra `ALERTA_REABASTECIMIENTO`.
 
-El `retailTaskExecutor` tiene 2 threads base, un máximo de 4 y una cola de 100 tareas. Si el adaptador lanza una excepción de ejecución, el listener la registra y trata de guardar un resultado fallido. El error secundario no revierte la compra que ya hizo commit.
+El `retailTaskExecutor` tiene 2 threads base, un máximo de 4 y una cola de 100 tareas. Si el adaptador lanza una excepción de ejecución, el listener registra el error en consola y trata de guardar un resultado fallido. El error secundario no revierte la compra que ya hizo commit.
+
+No todos los cambios de la API generan tareas asincrónicas. Se registran en consola los eventos que la aplicación publica: movimientos de inventario (reabastecimiento, ajuste, venta y devolución por cancelación), confirmación de pedido y alertas al alcanzar el umbral mínimo. Por ejemplo, editar la descripción de un producto o desactivarlo no publica por sí solo un evento secundario; una solicitud que no cambia inventario ni genera alerta tampoco produce esos mensajes.
 
 **Límite importante:** los eventos se mantienen en memoria y no usan outbox ni broker durable. Si el proceso cae tras el commit y antes de terminar el trabajo, la tarea puede perderse. Es adecuado para demostración/local, pero una operación productiva que requiera entrega garantizada debería usar outbox transaccional o mensajería persistente.
 

@@ -33,6 +33,7 @@ public class RetailAsyncEventListener {
     @Async("retailTaskExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void handle(RetailAsyncEvent event) {
+        log.info("Iniciando tarea asincrónica: {}", describe(event));
         try {
             switch (event.type()) {
                 case "ORDER_CONFIRMED" -> notifications.notifyOrderConfirmed(event.orderId());
@@ -40,8 +41,9 @@ public class RetailAsyncEventListener {
                 case "LOW_STOCK" -> alerts.alertLowStock(event.productId(), event.stockAfter(), event.minimumStock());
                 default -> throw new IllegalArgumentException("Tipo de evento asincrónico desconocido: " + event.type());
             }
+            log.info("Tarea asincrónica completada: {}", describe(event));
         } catch (RuntimeException exception) {
-            log.error("Falló la tarea secundaria {}: {}", event.type(), exception.getMessage(), exception);
+            log.error("Falló la tarea asincrónica {}: {}", describe(event), exception.getMessage(), exception);
             try {
                 eventLogs.save(new AsyncEventLog(event.type(), "Falló el procesamiento asincrónico; revisar logs",
                         false));
@@ -49,5 +51,18 @@ public class RetailAsyncEventListener {
                 log.error("No fue posible persistir el fallo asincrónico {}", event.type(), loggingException);
             }
         }
+    }
+
+    private static String describe(RetailAsyncEvent event) {
+        return switch (event.type()) {
+            case "ORDER_CONFIRMED" -> "notificación simulada de compra, pedido " + event.orderId();
+            case "WAREHOUSE_AUDIT" -> "auditoría de inventario, movimiento " + event.movementType()
+                    + ", producto " + event.productId() + ", cambio " + event.quantityDelta()
+                    + ", existencias posteriores " + event.stockAfter()
+                    + (event.orderId() == null ? "" : ", pedido " + event.orderId());
+            case "LOW_STOCK" -> "alerta de bajo inventario, producto " + event.productId()
+                    + ", existencias " + event.stockAfter() + ", mínimo " + event.minimumStock();
+            default -> "evento " + event.type();
+        };
     }
 }
